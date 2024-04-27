@@ -1,0 +1,508 @@
+#XXXXXXXXXXXXXXXXXXXXXXXXX-Packages-XXXXXXXXXXXXXXXXXXXXXXXXX
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+#installs packages
+ins(tidyverse)
+BiocManager::install("phyloseq")
+BiocManager::install("ggplot2")
+BiocManager::install("vegan")
+BiocManager::install("magrittr")
+BiocManager::install("DESeq2")
+BiocManager::install("ComplexHeatmap")
+#loads packages
+library(tidyverse)
+library(phyloseq)
+library(ggplot2)
+library(MetBrewer)
+library(vegan)
+library(magrittr)
+library(dplyr)
+library(DESeq2)
+library(ComplexHeatmap)
+#XXXXXXXXXXXXXXXXXXXXXXXXX-16S data-XXXXXXXXXXXXXXXXXXXXXXXXX
+#::::::::::::::::::::::::::::::::::Data import and adjusting::::::::::::::::::::::::::::::::::
+#imports OTU table
+BAC_OTU_table <- read.delim("C:/Users/EliteBook/OneDrive/Dokumenty/Metagenomics_R/16S_OTU_Table")
+#adjustes formating
+rownames(BAC_OTU_table) <- BAC_OTU_table$OTU_id
+BAC_OTU_table <- BAC_OTU_table [,-1]
+
+#imports taxonomy
+BAC_taxonomy <- read.delim("C:/Users/EliteBook/OneDrive/Dokumenty/Metagenomics_R/16S_best_hit_tax")
+#adjustes formating
+rownames(BAC_taxonomy) <- BAC_taxonomy$cluster
+BAC_taxonomy <- BAC_taxonomy [,-1]
+
+#imports metadata
+BAC_metadata <- read.delim("C:/Users/EliteBook/OneDrive/Dokumenty/Metagenomics_R/16S_metadata_new")
+#adjusts formating
+colnames(BAC_metadata)[1] <- "sample"
+BAC_metadata <- BAC_metadata[-4]
+rownames(BAC_metadata) <- BAC_metadata$sample
+
+#renames metadata treatment times
+BAC_metadata$time_from_treatment <- gsub("18_days", "18", BAC_metadata$time_from_treatment)
+BAC_metadata$time_from_treatment <- gsub("60_days", "60", BAC_metadata$time_from_treatment)
+BAC_metadata$time_from_treatment <- gsub("before", "0", BAC_metadata$time_from_treatment)
+BAC_metadata$treatment <- gsub("cntrol", "control", BAC_metadata$treatment)
+
+#imports all to phyloseq
+BAC_otu_table <- otu_table(as.matrix(BAC_OTU_table), taxa_are_rows = TRUE)
+BAC_tax_table <- tax_table(as.matrix(BAC_taxonomy))
+BAC_sample_data <- sample_data(BAC_metadata)
+input_BAC <- phyloseq(otu_table(BAC_otu_table),tax_table(BAC_tax_table),sample_data(BAC_sample_data))
+
+#gets rid of low abundant taxa (only 1 in dataset)
+head(sort(taxa_sums(input_BAC)))
+input_BAC_filtered = prune_taxa(taxa_sums(input_BAC)>1, input_BAC)
+head(sort(taxa_sums(input_BAC_filtered)))
+
+#adjustes to the same number of reads per sample (10 000)
+sample_sums(input_BAC_filtered)
+set.seed(42)
+input_BAC_filtered_rarified = rarefy_even_depth(input_BAC_filtered, sample.size = 10000)
+
+#::::::::::::::::::::::::::::::::::Alpha diversity estimare::::::::::::::::::::::::::::::::::
+#estimates alpha diversity
+BAC_div <- estimate_richness(input_BAC_filtered_rarified)
+#saves it to file
+write.table(BAC_div, file = "BAC_diversity_all.txt",quote = F, sep = "\t")
+#makes subsets for each sampling time
+time_filter_0 <- sample_data(input_BAC_filtered_rarified)$time_from_treatment == 0
+time_filter_18 <- sample_data(input_BAC_filtered_rarified)$time_from_treatment == 18
+time_filter_60 <- sample_data(input_BAC_filtered_rarified)$time_from_treatment == 60
+input_BAC_filtered_rarified_0 <- subset_samples(input_BAC_filtered_rarified, time_filter_0)
+input_BAC_filtered_rarified_18 <- subset_samples(input_BAC_filtered_rarified, time_filter_18)
+input_BAC_filtered_rarified_60 <- subset_samples(input_BAC_filtered_rarified, time_filter_60)
+#produces the graph of alpha diversity
+plot.alpha.div.0 <- plot_richness(input_BAC_filtered_rarified_0, x = "treatment", 
+                                measures = c("Observed", "Shannon")) +
+  geom_boxplot(aes(fill = treatment)) +
+  theme_bw() +
+  scale_fill_met_d("Tam", direction = -1)
+plot.alpha.div.0
+plot.alpha.div.18 <- plot_richness(input_BAC_filtered_rarified_18, x = "treatment", 
+                                   measures = c("Observed", "Shannon")) +
+  geom_boxplot(aes(fill = treatment)) +
+  theme_bw() +
+  scale_fill_met_d("Tam", direction = -1)
+plot.alpha.div.18
+plot.alpha.div.60 <- plot_richness(input_BAC_filtered_rarified_60, x = "treatment", 
+                                   measures = c("Observed", "Shannon")) +
+  geom_boxplot(aes(fill = treatment)) +
+  theme_bw() +
+  scale_fill_met_d("Tam", direction = -1)
+plot.alpha.div.60
+#::::::::::::::::::::::::::::::::::Beta diversity estimare::::::::::::::::::::::::::::::::::
+#Counts Bray-Curtis index for each subset
+BAC_dist_bray_18 = distance(input_BAC_filtered_rarified_18, method = "bray")
+BAC_dist_bray_60 = distance(input_BAC_filtered_rarified_60, method = "bray")
+BAC_dist_bray_0 = distance(input_BAC_filtered_rarified_0, method = "bray")
+#Prepares metadata for adonis
+BAC_metadata_18 <- BAC_metadata[BAC_metadata$time_from_treatment == 18, ]
+BAC_metadata_60 <- BAC_metadata[BAC_metadata$time_from_treatment == 60, ]
+BAC_metadata_0 <- BAC_metadata[BAC_metadata$time_from_treatment == 0, ]
+#makes permanova on bray-curtis index
+input_adonis = adonis2(BAC_dist_bray_18 ~ treatment, BAC_metadata_18)
+summary(input_adonis)
+#::::::::::::::::::::::::::::::::::Creation of Realtive abundance graphs:::::::::::::::::::::::
+#.......................................phylum..................................
+#transforms samples to realtive numbers for each subset
+BAC_percentages_18 = transform_sample_counts(input_BAC_filtered_rarified_18, function(x) x/sum(x)*100)
+BAC_percentages_60 = transform_sample_counts(input_BAC_filtered_rarified_60, function(x) x/sum(x)*100)
+BAC_percentages_0 = transform_sample_counts(input_BAC_filtered_rarified_0, function(x) x/sum(x)*100)
+#agregates same taxons
+BAC_percentages_phylum_18 <- tax_glom(BAC_percentages_18, taxrank = 'phylum', NArm = FALSE)
+BAC_percentages_agregated_phylum_18 <- psmelt(BAC_percentages_phylum_18)
+
+BAC_percentages_phylum_60 <- tax_glom(BAC_percentages_60, taxrank = 'phylum', NArm = FALSE)
+BAC_percentages_agregated_phylum_60 <- psmelt(BAC_percentages_phylum_60)
+
+BAC_percentages_phylum_0 <- tax_glom(BAC_percentages_0, taxrank = 'phylum', NArm = FALSE)
+BAC_percentages_agregated_phylum_0 <- psmelt(BAC_percentages_phylum_0)
+#counts median
+BAC_percentages_agregated_phylum_18 <- BAC_percentages_agregated_phylum_18 %>%
+  group_by(treatment, phylum) %>%
+  mutate(median=median(Abundance))
+BAC_percentages_agregated_phylum_60 <- BAC_percentages_agregated_phylum_60 %>%
+  group_by(treatment, phylum) %>%
+  mutate(median=median(Abundance))
+BAC_percentages_agregated_phylum_0 <- BAC_percentages_agregated_phylum_0 %>%
+  group_by(treatment, phylum) %>%
+  mutate(median=median(Abundance))
+#selects median >1 and keeps only uniqe phyla
+BAC_percentages_agregated_phylum_18_keep <- unique(BAC_percentages_agregated_phylum_18$phylum[BAC_percentages_agregated_phylum_18$median > 1])
+BAC_percentages_agregated_phylum_18$phylum[!(BAC_percentages_agregated_phylum_18$phylum %in% BAC_percentages_agregated_phylum_18_keep)] <- "< 1%"
+BAC_percentages_agregated_phylum_60_keep <- unique(BAC_percentages_agregated_phylum_60$phylum[BAC_percentages_agregated_phylum_60$median > 1])
+BAC_percentages_agregated_phylum_60$phylum[!(BAC_percentages_agregated_phylum_60$phylum %in% BAC_percentages_agregated_phylum_60_keep)] <- "< 1%"
+BAC_percentages_agregated_phylum_0_keep <- unique(BAC_percentages_agregated_phylum_0$phylum[BAC_percentages_agregated_phylum_0$median > 1])
+BAC_percentages_agregated_phylum_0$phylum[!(BAC_percentages_agregated_phylum_0$phylum %in% BAC_percentages_agregated_phylum_0_keep)] <- "< 1%"
+#aggregates based on sample, treatment and phylum
+BAC_percentages_agregated_phylum_18_sum <- BAC_percentages_agregated_phylum_18 %>%
+  group_by(sample,treatment,phylum) %>%
+  summarise(abundance=sum(Abundance))
+BAC_percentages_agregated_phylum_60_sum <- BAC_percentages_agregated_phylum_60 %>%
+  group_by(sample,treatment,phylum) %>%
+  summarise(abundance=sum(Abundance))
+BAC_percentages_agregated_phylum_0_sum <- BAC_percentages_agregated_phylum_0 %>%
+  group_by(sample,treatment,phylum) %>%
+  summarise(abundance=sum(Abundance))
+#produces graph
+BAC_phylum_plot_18 <- ggplot(BAC_percentages_agregated_phylum_18_sum, aes(x = sample, y = abundance, fill = phylum)) + 
+  geom_bar(stat = "identity", aes(fill=phylum)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.background = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("BAC_phylum_plot_18.png", plot = BAC_phylum_plot_18, width = 10, height = 6, units = "in")
+BAC_phylum_plot_60 <- ggplot(BAC_percentages_agregated_phylum_60_sum, aes(x = sample, y = abundance, fill = phylum)) + 
+  geom_bar(stat = "identity", aes(fill=phylum)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.background = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("BAC_phylum_plot_60.png", plot = BAC_phylum_plot_60, width = 10, height = 6, units = "in")
+BAC_phylum_plot_0 <- ggplot(BAC_percentages_agregated_phylum_0_sum, aes(x = sample, y = abundance, fill = phylum)) + 
+  geom_bar(stat = "identity", aes(fill=phylum)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.background = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("BAC_phylum_plot_0.png", plot = BAC_phylum_plot_0, width = 10, height = 6, units = "in")
+#.......................................genus..................................
+#transforms samples to realtive numbers for each subset
+BAC_percentages_18 = transform_sample_counts(input_BAC_filtered_rarified_18, function(x) x/sum(x)*100)
+BAC_percentages_60 = transform_sample_counts(input_BAC_filtered_rarified_60, function(x) x/sum(x)*100)
+BAC_percentages_0 = transform_sample_counts(input_BAC_filtered_rarified_0, function(x) x/sum(x)*100)
+#agregates same taxons
+BAC_percentages_genus_18 <- tax_glom(BAC_percentages_18, taxrank = 'genus', NArm = FALSE)
+BAC_percentages_agregated_genus_18 <- psmelt(BAC_percentages_genus_18)
+
+BAC_percentages_genus_60 <- tax_glom(BAC_percentages_60, taxrank = 'genus', NArm = FALSE)
+BAC_percentages_agregated_genus_60 <- psmelt(BAC_percentages_genus_60)
+
+BAC_percentages_genus_0 <- tax_glom(BAC_percentages_0, taxrank = 'genus', NArm = FALSE)
+BAC_percentages_agregated_genus_0 <- psmelt(BAC_percentages_genus_0)
+#counts median
+BAC_percentages_agregated_genus_18 <- BAC_percentages_agregated_genus_18 %>%
+  group_by(treatment, genus) %>%
+  mutate(median=median(Abundance))
+BAC_percentages_agregated_genus_60 <- BAC_percentages_agregated_genus_60 %>%
+  group_by(treatment, genus) %>%
+  mutate(median=median(Abundance))
+BAC_percentages_agregated_genus_0 <- BAC_percentages_agregated_genus_0 %>%
+  group_by(treatment, genus) %>%
+  mutate(median=median(Abundance))
+#selects median >1 and keeps only uniqe phyla
+BAC_percentages_agregated_genus_18_keep <- unique(BAC_percentages_agregated_genus_18$genus[BAC_percentages_agregated_genus_18$median > 1])
+BAC_percentages_agregated_genus_18$genus[!(BAC_percentages_agregated_genus_18$genus %in% BAC_percentages_agregated_genus_18_keep)] <- "< 1%"
+BAC_percentages_agregated_genus_60_keep <- unique(BAC_percentages_agregated_genus_60$genus[BAC_percentages_agregated_genus_60$median > 1])
+BAC_percentages_agregated_genus_60$genus[!(BAC_percentages_agregated_genus_60$genus %in% BAC_percentages_agregated_genus_60_keep)] <- "< 1%"
+BAC_percentages_agregated_genus_0_keep <- unique(BAC_percentages_agregated_genus_0$genus[BAC_percentages_agregated_genus_0$median > 1])
+BAC_percentages_agregated_genus_0$genus[!(BAC_percentages_agregated_genus_0$genus %in% BAC_percentages_agregated_genus_0_keep)] <- "< 1%"
+#aggregates based on sample, treatment and genus
+BAC_percentages_agregated_genus_18_sum <- BAC_percentages_agregated_genus_18 %>%
+  group_by(sample,treatment,genus) %>%
+  summarise(abundance=sum(Abundance))
+BAC_percentages_agregated_genus_60_sum <- BAC_percentages_agregated_genus_60 %>%
+  group_by(sample,treatment,genus) %>%
+  summarise(abundance=sum(Abundance))
+BAC_percentages_agregated_genus_0_sum <- BAC_percentages_agregated_genus_0 %>%
+  group_by(sample,treatment,genus) %>%
+  summarise(abundance=sum(Abundance))
+#produces graph
+BAC_genus_plot_18 <- ggplot(BAC_percentages_agregated_genus_18_sum, aes(x = sample, y = abundance, fill = genus)) + 
+  geom_bar(stat = "identity", aes(fill=genus)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.background = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("BAC_genus_plot_18.png", plot = BAC_genus_plot_18, width = 10, height = 6, units = "in")
+BAC_genus_plot_60 <- ggplot(BAC_percentages_agregated_genus_60_sum, aes(x = sample, y = abundance, fill = genus)) + 
+  geom_bar(stat = "identity", aes(fill=genus)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.background = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("BAC_genus_plot_60.png", plot = BAC_genus_plot_60, width = 10, height = 6, units = "in")
+BAC_genus_plot_0 <- ggplot(BAC_percentages_agregated_genus_0_sum, aes(x = sample, y = abundance, fill = genus)) + 
+  geom_bar(stat = "identity", aes(fill=genus)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.background = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("BAC_genus_plot_0.png", plot = BAC_genus_plot_0, width = 10, height = 6, units = "in")
+#::::::::::::::::::::::::::::::::::'Proicessed data aquisition:::::::::::::::::::::::
+otu_table_rarified <- as.data.frame(otu_table(input_BAC_filtered_rarified))
+write.csv(otu_table_rarified, file = "otu_table_rarified.csv", row.names = TRUE)
+#XXXXXXXXXXXXXXXXXXXXXXXXX-ITS data-XXXXXXXXXXXXXXXXXXXXXXXXX
+#::::::::::::::::::::::::::::::::::Data import and adjusting::::::::::::::::::::::::::::::::::
+#imports OTU table
+ITS_OTU_table <- read.delim("C:/Users/EliteBook/OneDrive/Dokumenty/Metagenomics_R/ITS_OTU_Table")
+#adjustes formating
+rownames(ITS_OTU_table) <- ITS_OTU_table$OTU_id
+ITS_OTU_table <- ITS_OTU_table [,-1]
+
+#imports taxonomy
+ITS_taxonomy <- read.delim("C:/Users/EliteBook/OneDrive/Dokumenty/Metagenomics_R/ITS_best_hit_tax")
+#adjustes formating
+rownames(ITS_taxonomy) <- ITS_taxonomy$cluster
+ITS_taxonomy <- ITS_taxonomy [,-1]
+
+#imports metadata
+ITS_metadata <- read.delim("C:/Users/EliteBook/OneDrive/Dokumenty/Metagenomics_R/ITS_metadata_new")
+#adjusts formating
+colnames(ITS_metadata)[1] <- "sample"
+ITS_metadata <- ITS_metadata[-4]
+rownames(ITS_metadata) <- ITS_metadata$sample
+
+#renames metadata treatment times
+ITS_metadata$time_from_treatment <- gsub("18_days", "18", ITS_metadata$time_from_treatment)
+ITS_metadata$time_from_treatment <- gsub("60_days", "60", ITS_metadata$time_from_treatment)
+ITS_metadata$time_from_treatment <- gsub("before", "0", ITS_metadata$time_from_treatment)
+ITS_metadata$treatment <- gsub("cntrol", "control", ITS_metadata$treatment)
+
+#imports all to phyloseq
+ITS_otu_table <- otu_table(as.matrix(ITS_OTU_table), taxa_are_rows = TRUE)
+ITS_tax_table <- tax_table(as.matrix(ITS_taxonomy))
+ITS_sample_data <- sample_data(ITS_metadata)
+input_ITS <- phyloseq(otu_table(ITS_otu_table),tax_table(ITS_tax_table),sample_data(ITS_sample_data))
+
+#gets rid of low abundant taxa (only 1 in dataset)
+head(sort(taxa_sums(input_ITS)))
+input_ITS_filtered = prune_taxa(taxa_sums(input_ITS)>1, input_ITS)
+head(sort(taxa_sums(input_ITS_filtered)))
+
+#skips the rarefication step
+input_ITS_filtered_rarified = input_ITS_filtered
+
+#::::::::::::::::::::::::::::::::::Alpha diversity estimare::::::::::::::::::::::::::::::::::
+#estimates alpha diversity
+ITS_div <- estimate_richness(input_ITS_filtered_rarified)
+#saves it to file
+write.table(ITS_div, file = "ITS_diversity_all.txt",quote = F, sep = "\t")
+#makes subsets for each sampling time
+time_filter_0 <- sample_data(input_ITS_filtered_rarified)$time_from_treatment == 0
+time_filter_18 <- sample_data(input_ITS_filtered_rarified)$time_from_treatment == 18
+time_filter_60 <- sample_data(input_ITS_filtered_rarified)$time_from_treatment == 60
+input_ITS_filtered_rarified_0 <- subset_samples(input_ITS_filtered_rarified, time_filter_0)
+input_ITS_filtered_rarified_18 <- subset_samples(input_ITS_filtered_rarified, time_filter_18)
+input_ITS_filtered_rarified_60 <- subset_samples(input_ITS_filtered_rarified, time_filter_60)
+#produces the graph of alpha diversity
+plot.alpha.div.0 <- plot_richness(input_ITS_filtered_rarified_0, x = "treatment", 
+                                measures = c("Observed", "Shannon")) +
+  geom_boxplot(aes(fill = treatment)) +
+  theme_bw() +
+  scale_fill_met_d("Tam", direction = -1)
+plot.alpha.div.0
+plot.alpha.div.18 <- plot_richness(input_ITS_filtered_rarified_18, x = "treatment", 
+                                   measures = c("Observed", "Shannon")) +
+  geom_boxplot(aes(fill = treatment)) +
+  theme_bw() +
+  scale_fill_met_d("Tam", direction = -1)
+plot.alpha.div.18
+plot.alpha.div.60 <- plot_richness(input_ITS_filtered_rarified_60, x = "treatment", 
+                                   measures = c("Observed", "Shannon")) +
+  geom_boxplot(aes(fill = treatment)) +
+  theme_bw() +
+  scale_fill_met_d("Tam", direction = -1)
+plot.alpha.div.60
+#::::::::::::::::::::::::::::::::::Beta diversity estimare::::::::::::::::::::::::::::::::::
+#Counts Bray-Curtis index for each subset
+ITS_dist_bray_18 = distance(input_ITS_filtered_rarified_18, method = "bray")
+ITS_dist_bray_60 = distance(input_ITS_filtered_rarified_60, method = "bray")
+ITS_dist_bray_0 = distance(input_ITS_filtered_rarified_0, method = "bray")
+#Prepares metadata for adonis
+ITS_metadata_18 <- ITS_metadata[ITS_metadata$time_from_treatment == 18, ]
+ITS_metadata_60 <- ITS_metadata[ITS_metadata$time_from_treatment == 60, ]
+ITS_metadata_0 <- ITS_metadata[ITS_metadata$time_from_treatment == 0, ]
+#makes permanova on bray-curtis index
+input_adonis = adonis2(ITS_dist_bray_18 ~ treatment, ITS_metadata_18)
+summary(input_adonis)
+#::::::::::::::::::::::::::::::::::Creation of Realtive abundance graphs:::::::::::::::::::::::
+#.......................................phylum..................................
+#transforms samples to realtive numbers for each subset
+ITS_percentages_18 = transform_sample_counts(input_ITS_filtered_rarified_18, function(x) x/sum(x)*100)
+ITS_percentages_60 = transform_sample_counts(input_ITS_filtered_rarified_60, function(x) x/sum(x)*100)
+ITS_percentages_0 = transform_sample_counts(input_ITS_filtered_rarified_0, function(x) x/sum(x)*100)
+#agregates same taxons
+ITS_percentages_phylum_18 <- tax_glom(ITS_percentages_18, taxrank = 'phylum', NArm = FALSE)
+ITS_percentages_agregated_phylum_18 <- psmelt(ITS_percentages_phylum_18)
+
+ITS_percentages_phylum_60 <- tax_glom(ITS_percentages_60, taxrank = 'phylum', NArm = FALSE)
+ITS_percentages_agregated_phylum_60 <- psmelt(ITS_percentages_phylum_60)
+
+ITS_percentages_phylum_0 <- tax_glom(ITS_percentages_0, taxrank = 'phylum', NArm = FALSE)
+ITS_percentages_agregated_phylum_0 <- psmelt(ITS_percentages_phylum_0)
+#counts median
+ITS_percentages_agregated_phylum_18 <- ITS_percentages_agregated_phylum_18 %>%
+  group_by(treatment, phylum) %>%
+  mutate(median=median(Abundance))
+ITS_percentages_agregated_phylum_60 <- ITS_percentages_agregated_phylum_60 %>%
+  group_by(treatment, phylum) %>%
+  mutate(median=median(Abundance))
+ITS_percentages_agregated_phylum_0 <- ITS_percentages_agregated_phylum_0 %>%
+  group_by(treatment, phylum) %>%
+  mutate(median=median(Abundance))
+#selects median >1 and keeps only uniqe phyla
+ITS_percentages_agregated_phylum_18_keep <- unique(ITS_percentages_agregated_phylum_18$phylum[ITS_percentages_agregated_phylum_18$median > 1])
+ITS_percentages_agregated_phylum_18$phylum[!(ITS_percentages_agregated_phylum_18$phylum %in% ITS_percentages_agregated_phylum_18_keep)] <- "< 1%"
+ITS_percentages_agregated_phylum_60_keep <- unique(ITS_percentages_agregated_phylum_60$phylum[ITS_percentages_agregated_phylum_60$median > 1])
+ITS_percentages_agregated_phylum_60$phylum[!(ITS_percentages_agregated_phylum_60$phylum %in% ITS_percentages_agregated_phylum_60_keep)] <- "< 1%"
+ITS_percentages_agregated_phylum_0_keep <- unique(ITS_percentages_agregated_phylum_0$phylum[ITS_percentages_agregated_phylum_0$median > 1])
+ITS_percentages_agregated_phylum_0$phylum[!(ITS_percentages_agregated_phylum_0$phylum %in% ITS_percentages_agregated_phylum_0_keep)] <- "< 1%"
+#aggregates based on sample, treatment and phylum
+ITS_percentages_agregated_phylum_18_sum <- ITS_percentages_agregated_phylum_18 %>%
+  group_by(sample,treatment,phylum) %>%
+  summarise(abundance=sum(Abundance))
+ITS_percentages_agregated_phylum_60_sum <- ITS_percentages_agregated_phylum_60 %>%
+  group_by(sample,treatment,phylum) %>%
+  summarise(abundance=sum(Abundance))
+ITS_percentages_agregated_phylum_0_sum <- ITS_percentages_agregated_phylum_0 %>%
+  group_by(sample,treatment,phylum) %>%
+  summarise(abundance=sum(Abundance))
+#produces graph
+ITS_phylum_plot_18 <- ggplot(ITS_percentages_agregated_phylum_18_sum, aes(x = sample, y = abundance, fill = phylum)) + 
+  geom_bar(stat = "identity", aes(fill=phylum)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.ITSkground = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("ITS_phylum_plot_18.png", plot = ITS_phylum_plot_18, width = 10, height = 6, units = "in")
+ITS_phylum_plot_60 <- ggplot(ITS_percentages_agregated_phylum_60_sum, aes(x = sample, y = abundance, fill = phylum)) + 
+  geom_bar(stat = "identity", aes(fill=phylum)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.ITSkground = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("ITS_phylum_plot_60.png", plot = ITS_phylum_plot_60, width = 10, height = 6, units = "in")
+ITS_phylum_plot_0 <- ggplot(ITS_percentages_agregated_phylum_0_sum, aes(x = sample, y = abundance, fill = phylum)) + 
+  geom_bar(stat = "identity", aes(fill=phylum)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.ITSkground = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("ITS_phylum_plot_0.png", plot = ITS_phylum_plot_0, width = 10, height = 6, units = "in")
+#.......................................genus..................................
+#transforms samples to realtive numbers for each subset
+ITS_percentages_18 = transform_sample_counts(input_ITS_filtered_rarified_18, function(x) x/sum(x)*100)
+ITS_percentages_60 = transform_sample_counts(input_ITS_filtered_rarified_60, function(x) x/sum(x)*100)
+ITS_percentages_0 = transform_sample_counts(input_ITS_filtered_rarified_0, function(x) x/sum(x)*100)
+#agregates same taxons
+ITS_percentages_genus_18 <- tax_glom(ITS_percentages_18, taxrank = 'genus', NArm = FALSE)
+ITS_percentages_agregated_genus_18 <- psmelt(ITS_percentages_genus_18)
+
+ITS_percentages_genus_60 <- tax_glom(ITS_percentages_60, taxrank = 'genus', NArm = FALSE)
+ITS_percentages_agregated_genus_60 <- psmelt(ITS_percentages_genus_60)
+
+ITS_percentages_genus_0 <- tax_glom(ITS_percentages_0, taxrank = 'genus', NArm = FALSE)
+ITS_percentages_agregated_genus_0 <- psmelt(ITS_percentages_genus_0)
+#counts median
+ITS_percentages_agregated_genus_18 <- ITS_percentages_agregated_genus_18 %>%
+  group_by(treatment, genus) %>%
+  mutate(median=median(Abundance))
+ITS_percentages_agregated_genus_60 <- ITS_percentages_agregated_genus_60 %>%
+  group_by(treatment, genus) %>%
+  mutate(median=median(Abundance))
+ITS_percentages_agregated_genus_0 <- ITS_percentages_agregated_genus_0 %>%
+  group_by(treatment, genus) %>%
+  mutate(median=median(Abundance))
+#selects median >1 and keeps only uniqe phyla
+ITS_percentages_agregated_genus_18_keep <- unique(ITS_percentages_agregated_genus_18$genus[ITS_percentages_agregated_genus_18$median > 1])
+ITS_percentages_agregated_genus_18$genus[!(ITS_percentages_agregated_genus_18$genus %in% ITS_percentages_agregated_genus_18_keep)] <- "< 1%"
+ITS_percentages_agregated_genus_60_keep <- unique(ITS_percentages_agregated_genus_60$genus[ITS_percentages_agregated_genus_60$median > 1])
+ITS_percentages_agregated_genus_60$genus[!(ITS_percentages_agregated_genus_60$genus %in% ITS_percentages_agregated_genus_60_keep)] <- "< 1%"
+ITS_percentages_agregated_genus_0_keep <- unique(ITS_percentages_agregated_genus_0$genus[ITS_percentages_agregated_genus_0$median > 1])
+ITS_percentages_agregated_genus_0$genus[!(ITS_percentages_agregated_genus_0$genus %in% ITS_percentages_agregated_genus_0_keep)] <- "< 1%"
+#aggregates based on sample, treatment and genus
+ITS_percentages_agregated_genus_18_sum <- ITS_percentages_agregated_genus_18 %>%
+  group_by(sample,treatment,genus) %>%
+  summarise(abundance=sum(Abundance))
+ITS_percentages_agregated_genus_60_sum <- ITS_percentages_agregated_genus_60 %>%
+  group_by(sample,treatment,genus) %>%
+  summarise(abundance=sum(Abundance))
+ITS_percentages_agregated_genus_0_sum <- ITS_percentages_agregated_genus_0 %>%
+  group_by(sample,treatment,genus) %>%
+  summarise(abundance=sum(Abundance))
+#produces graph
+ITS_genus_plot_18 <- ggplot(ITS_percentages_agregated_genus_18_sum, aes(x = sample, y = abundance, fill = genus)) + 
+  geom_bar(stat = "identity", aes(fill=genus)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.ITSkground = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("ITS_genus_plot_18.png", plot = ITS_genus_plot_18, width = 10, height = 6, units = "in")
+ITS_genus_plot_60 <- ggplot(ITS_percentages_agregated_genus_60_sum, aes(x = sample, y = abundance, fill = genus)) + 
+  geom_bar(stat = "identity", aes(fill=genus)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.ITSkground = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("ITS_genus_plot_60.png", plot = ITS_genus_plot_60, width = 10, height = 6, units = "in")
+ITS_genus_plot_0 <- ggplot(ITS_percentages_agregated_genus_0_sum, aes(x = sample, y = abundance, fill = genus)) + 
+  geom_bar(stat = "identity", aes(fill=genus)) + 
+  labs(x="", y="%") +
+  facet_wrap(~treatment, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.ITSkground = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ggsave("ITS_genus_plot_0.png", plot = ITS_genus_plot_0, width = 10, height = 6, units = "in")
+#::::::::::::::::::::::::::::::::::'Proicessed data aquisition:::::::::::::::::::::::
+otu_table_rarified <- as.data.frame(otu_table(input_ITS_filtered_rarified))
+write.csv(otu_table_rarified, file = "otu_table_rarified.csv", row.names = TRUE)
+#XXXXXXXXXXXXXXXXXXXXXXXXX-Ecological function data-XXXXXXXXXXXXXXXXXXXXXXXXX
+#::::::::::::::::::::::::::::::::::Data import and adjusting::::::::::::::::::::::::::::::::::
+#imports OTU table
+FUN_OTU_table <- read.delim("C:/Users/EliteBook/OneDrive/Dokumenty/Metagenomics_R/FUN_OTU_Table")
+#adjustes formating
+rownames(FUN_OTU_table) <- FUN_OTU_table$OTU_id
+FUN_OTU_table <- FUN_OTU_table [,-1]
+
+#imports taxonomy
+FUN_taxonomy <- read.delim("C:/Users/EliteBook/OneDrive/Dokumenty/Metagenomics_R/FUN_best_hit_tax")
+#adjustes formating
+rownames(FUN_taxonomy) <- FUN_taxonomy$cluster
+FUN_taxonomy <- FUN_taxonomy [,-1]
+
+#imports metadata
+FUN_metadata <- read.delim("C:/Users/EliteBook/OneDrive/Dokumenty/Metagenomics_R/FUN_metadata_new")
+#adjusts formating
+colnames(FUN_metadata)[1] <- "sample"
+FUN_metadata <- FUN_metadata[-4]
+rownames(FUN_metadata) <- FUN_metadata$sample
+
+#renames metadata treatment times
+FUN_metadata$time_from_treatment <- gsub("18_days", "18", FUN_metadata$time_from_treatment)
+FUN_metadata$time_from_treatment <- gsub("60_days", "60", FUN_metadata$time_from_treatment)
+FUN_metadata$time_from_treatment <- gsub("before", "0", FUN_metadata$time_from_treatment)
+FUN_metadata$treatment <- gsub("cntrol", "control", FUN_metadata$treatment)
+
+#imports all to phyloseq
+FUN_otu_table <- otu_table(as.matrix(FUN_OTU_table), taxa_are_rows = TRUE)
+FUN_tax_table <- tax_table(as.matrix(FUN_taxonomy))
+FUN_sample_data <- sample_data(FUN_metadata)
+input_FUN <- phyloseq(otu_table(FUN_otu_table),tax_table(FUN_tax_table),sample_data(FUN_sample_data))
+
+#gets rid of low abundant taxa (only 1 in dataset)
+head(sort(taxa_sums(input_FUN)))
+input_FUN_filtered = prune_taxa(taxa_sums(input_FUN)>1, input_FUN)
+head(sort(taxa_sums(input_FUN_filtered)))
+
+#adjustes to the same number of reads per sample (10 000)
+sample_sums(input_FUN_filtered)
+set.seed(42)
+input_FUN_filtered_rarified = rarefy_even_depth(input_FUN_filtered, sample.size = 10000)
+#::::::::::::::::::::::::::::::::::Proicessed data aquisition:::::::::::::::::::::::
+otu_table_rarified <- as.data.frame(otu_table(input_FUN_filtered_rarified))
+write.csv(otu_table_rarified, file = "otu_table_rarified.csv", row.names = TRUE)
