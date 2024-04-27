@@ -503,6 +503,6 @@ head(sort(taxa_sums(input_FUN_filtered)))
 sample_sums(input_FUN_filtered)
 set.seed(42)
 input_FUN_filtered_rarified = rarefy_even_depth(input_FUN_filtered, sample.size = 10000)
-#::::::::::::::::::::::::::::::::::Proicessed data aquisition:::::::::::::::::::::::
+#::::::::::::::::::::::::::::::::::Processed data aquisition:::::::::::::::::::::::
 otu_table_rarified <- as.data.frame(otu_table(input_FUN_filtered_rarified))
 write.csv(otu_table_rarified, file = "otu_table_rarified.csv", row.names = TRUE)
